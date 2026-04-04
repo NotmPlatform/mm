@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime
 from typing import Optional
@@ -41,6 +42,11 @@ ADMIN_USER_IDS = {
 # Пример: PAID_GROUP_CHAT=-1001234567890
 PAID_GROUP_CHAT = os.getenv("PAID_GROUP_CHAT", "")
 
+# Канал-источник, где лежат видеоуроки mm1, mm2, mm3...
+# ВАЖНО: numeric chat_id закрытого канала.
+# Бот должен быть админом этого канала, чтобы получать channel_post/edited_channel_post.
+VIDEO_SOURCE_CHAT = os.getenv("VIDEO_SOURCE_CHAT", "")
+
 # Ссылка на менеджера, если доступа нет
 MANAGER_URL = os.getenv("MANAGER_URL", "https://t.me/+Sr03OD8ZRxwxMDEy")
 
@@ -81,6 +87,8 @@ HELP_TEXT = (
     "/stats — статистика (для администратора)"
 )
 
+VIDEO_LABEL_RE = re.compile(r"\bmm(\d{1,2})\b", re.IGNORECASE)
+
 # =========================================
 # УРОКИ
 # =========================================
@@ -90,73 +98,61 @@ LESSONS = [
         "number": 1,
         "title": "Урок 1",
         "text_url": "https://telegra.ph/Bolshinstvo-dumayut-chto-marketing-v-Web3--ehto-posty-memy-i-aktivnost-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 2,
         "title": "Урок 2",
         "text_url": "https://telegra.ph/Urok-2--Auditoriya-v-Web3--pochemu-nelzya-govorit-so-vsemi-odinakovo-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 3,
         "title": "Урок 3",
         "text_url": "https://telegra.ph/Urok-3--Offer-i-pozicionirovanie--kak-obyasnit-cennost-za-10-sekund-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 4,
         "title": "Урок 4",
         "text_url": "https://telegra.ph/UROK-4--Kanaly-rosta-v-Web3--gde-proekt-realno-nabiraet-silu-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 5,
         "title": "Урок 5",
         "text_url": "https://telegra.ph/Urok-5--Kontent-kotoryj-rastit-proekt-a-ne-prosto-zapolnyaet-lentu-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 6,
         "title": "Урок 6",
         "text_url": "https://telegra.ph/Urok-6--Gde-zakanchivayutsya-ohvaty-i-nachinaetsya-realnyj-growth-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 7,
         "title": "Урок 7",
         "text_url": "https://telegra.ph/Urok-7--Kampanii-v-Web3--kak-zapuskat-to-chto-dayot-rezultat-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 8,
         "title": "Урок 8",
         "text_url": "https://telegra.ph/Urok-8--KOL-i-affiliate--gde-rost-a-gde-sliv-byudzheta-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 9,
         "title": "Урок 9",
         "text_url": "https://telegra.ph/Urok-9--Retention-v-Web3--kak-sdelat-tak-chtoby-polzovatel-ne-ischez-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 10,
         "title": "Урок 10",
         "text_url": "https://telegra.ph/Urok-10--Metriki-Web3-Marketing--na-chto-smotryat-silnye-komandy-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 11,
         "title": "Урок 11",
         "text_url": "https://telegra.ph/Urok-11--Web3-Marketing-v-SNG--kak-adaptirovat-globalnye-mehaniki-pod-lokalnyj-rynok-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
     {
         "number": 12,
         "title": "Урок 12",
         "text_url": "https://telegra.ph/Urok-12--Kak-vojti-v-professiyu-Web3-Marketing-i-pokazat-sebya-rynku-03-19",
-        "video_url": "https://rutube.ru/video/a09d052994202df2f70ac0a0b34dc4c5/?r=wd",
     },
 ]
 
@@ -226,7 +222,25 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lesson_videos (
+                lesson_number INTEGER PRIMARY KEY,
+                label TEXT NOT NULL,
+                source_message_id INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
+
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "last_video_message_id" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN last_video_message_id INTEGER")
+            conn.commit()
 
 
 def upsert_user(user_id: int, username: Optional[str], first_name: Optional[str]) -> None:
@@ -310,6 +324,55 @@ def unlock_materials(user_id: int) -> None:
         conn.commit()
 
 
+def save_lesson_video_mapping(lesson_number: int, label: str, source_message_id: int) -> None:
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO lesson_videos (lesson_number, label, source_message_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(lesson_number) DO UPDATE SET
+                label = excluded.label,
+                source_message_id = excluded.source_message_id,
+                updated_at = excluded.updated_at
+            """,
+            (lesson_number, label, source_message_id, now),
+        )
+        conn.commit()
+
+
+def get_lesson_video_message_id(lesson_number: int) -> Optional[int]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT source_message_id FROM lesson_videos WHERE lesson_number = ?",
+            (lesson_number,),
+        ).fetchone()
+        return row["source_message_id"] if row else None
+
+
+def get_last_video_message_id(user_id: int) -> Optional[int]:
+    state = get_user_state(user_id)
+    if not state:
+        return None
+    try:
+        return state["last_video_message_id"]
+    except Exception:
+        return None
+
+
+def set_last_video_message_id(user_id: int, message_id: Optional[int]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET last_video_message_id = ?, last_seen_at = ?
+            WHERE user_id = ?
+            """,
+            (message_id, datetime.utcnow().isoformat(), user_id),
+        )
+        conn.commit()
+
+
 def get_stats() -> dict:
     with get_conn() as conn:
         users_total = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
@@ -320,11 +383,15 @@ def get_stats() -> dict:
         materials_total = conn.execute(
             "SELECT COUNT(*) AS c FROM users WHERE materials_unlocked = 1"
         ).fetchone()["c"]
+        indexed_videos = conn.execute(
+            "SELECT COUNT(*) AS c FROM lesson_videos"
+        ).fetchone()["c"]
 
     return {
         "users_total": users_total,
         "finished_total": finished_total,
         "materials_total": materials_total,
+        "indexed_videos": indexed_videos,
     }
 
 
@@ -337,6 +404,53 @@ def lesson_by_number(lesson_number: int) -> Optional[dict]:
         if lesson["number"] == lesson_number:
             return lesson
     return None
+
+
+def extract_lesson_number_from_mm_label(raw_value: str) -> Optional[int]:
+    if not raw_value:
+        return None
+    match = VIDEO_LABEL_RE.search(raw_value.strip())
+    if not match:
+        return None
+    lesson_number = int(match.group(1))
+    if 1 <= lesson_number <= LESSONS_COUNT:
+        return lesson_number
+    return None
+
+
+def extract_video_lesson_number(message) -> Optional[int]:
+    candidates = []
+
+    if getattr(message, "caption", None):
+        candidates.append(message.caption.strip())
+
+    if getattr(message, "text", None):
+        candidates.append(message.text.strip())
+
+    video = getattr(message, "video", None)
+    if video and getattr(video, "file_name", None):
+        file_name = os.path.splitext(video.file_name)[0]
+        candidates.append(file_name.strip())
+
+    document = getattr(message, "document", None)
+    if document and getattr(document, "file_name", None):
+        file_name = os.path.splitext(document.file_name)[0]
+        candidates.append(file_name.strip())
+
+    for candidate in candidates:
+        lesson_number = extract_lesson_number_from_mm_label(candidate)
+        if lesson_number:
+            return lesson_number
+
+    return None
+
+
+def has_copyable_video_content(message) -> bool:
+    return bool(
+        getattr(message, "video", None)
+        or getattr(message, "document", None)
+        or getattr(message, "animation", None)
+    )
 
 
 def access_gate_keyboard() -> InlineKeyboardMarkup:
@@ -392,8 +506,9 @@ def lesson_keyboard(lesson_number: int, is_last: bool) -> InlineKeyboardMarkup:
 
     if lesson and lesson.get("text_url"):
         rows.append([InlineKeyboardButton("📖 Открыть текст", url=lesson["text_url"])])
-    if lesson and lesson.get("video_url"):
-        rows.append([InlineKeyboardButton("🎬 Открыть видео", url=lesson["video_url"])])
+
+    if VIDEO_SOURCE_CHAT:
+        rows.append([InlineKeyboardButton("🎬 Открыть видео", callback_data=f"open_video:{lesson_number}")])
 
     rows.append([InlineKeyboardButton("✅ Отметить урок пройденным", callback_data=f"complete:{lesson_number}")])
 
@@ -464,6 +579,69 @@ async def ensure_paid_access(query, user_id: int, context: ContextTypes.DEFAULT_
     return False
 
 
+async def delete_previous_video(bot, user_id: int) -> None:
+    last_video_message_id = get_last_video_message_id(user_id)
+    if not last_video_message_id:
+        return
+
+    try:
+        await bot.delete_message(chat_id=user_id, message_id=last_video_message_id)
+    except Exception as exc:
+        logger.info(
+            "Previous video delete skipped | user=%s | message_id=%s | error=%s",
+            user_id,
+            last_video_message_id,
+            exc,
+        )
+    finally:
+        set_last_video_message_id(user_id, None)
+
+
+async def send_lesson_video(
+    user_id: int,
+    lesson_number: int,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> str:
+    if not VIDEO_SOURCE_CHAT:
+        return "source_chat_missing"
+
+    source_message_id = get_lesson_video_message_id(lesson_number)
+    if not source_message_id:
+        return "not_indexed"
+
+    try:
+        await delete_previous_video(context.bot, user_id)
+
+        copied = await context.bot.copy_message(
+            chat_id=user_id,
+            from_chat_id=int(VIDEO_SOURCE_CHAT),
+            message_id=int(source_message_id),
+        )
+
+        set_last_video_message_id(user_id, copied.message_id)
+        return "ok"
+    except Exception as exc:
+        logger.exception(
+            "Failed to send lesson video | user=%s | lesson=%s | source_chat=%s | source_message_id=%s | error=%s",
+            user_id,
+            lesson_number,
+            VIDEO_SOURCE_CHAT,
+            source_message_id,
+            exc,
+        )
+        return "copy_failed"
+
+
+def build_video_not_indexed_text(lesson_number: int) -> str:
+    return (
+        f"Видео для урока {lesson_number} ещё не найдено.\n\n"
+        f"В закрытом канале должен быть пост с видео и меткой mm{lesson_number} "
+        "(в caption, тексте поста или имени файла).\n\n"
+        "Если этот пост был опубликован раньше, чем бота добавили в канал, "
+        "просто отредактируй пост в канале — бот увидит обновление и сам сохранит нужный ID."
+    )
+
+
 # =========================================
 # ХЕНДЛЕРЫ
 # =========================================
@@ -503,7 +681,8 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "📊 Статистика бота\n\n"
         f"Пользователей: {stats['users_total']}\n"
         f"Завершили все уроки: {stats['finished_total']}\n"
-        f"Открыли материалы курса: {stats['materials_total']}"
+        f"Открыли материалы курса: {stats['materials_total']}\n"
+        f"Видео привязано: {stats['indexed_videos']} из {LESSONS_COUNT}"
     )
     if update.message:
         await update.message.reply_text(text)
@@ -541,7 +720,12 @@ async def show_all_lessons(query, user_id: int) -> None:
     )
 
 
-async def show_lesson(query, user_id: int, lesson_number: int) -> None:
+async def show_lesson(
+    query,
+    user_id: int,
+    lesson_number: int,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
     lesson = lesson_by_number(lesson_number)
     if not lesson:
         await query.answer("Урок не найден.", show_alert=True)
@@ -553,6 +737,7 @@ async def show_lesson(query, user_id: int, lesson_number: int) -> None:
         await query.answer("Сначала пройди предыдущий урок.", show_alert=True)
         return
 
+    await delete_previous_video(context.bot, user_id)
     set_current_lesson(user_id, lesson_number)
 
     text = (
@@ -598,6 +783,44 @@ async def show_materials_gate(query, user_id: int, context: ContextTypes.DEFAULT
     )
 
 
+async def index_video_source_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    if not VIDEO_SOURCE_CHAT:
+        return
+
+    try:
+        source_chat_id = int(VIDEO_SOURCE_CHAT)
+    except ValueError:
+        logger.warning("VIDEO_SOURCE_CHAT is not numeric: %s", VIDEO_SOURCE_CHAT)
+        return
+
+    if not message.chat or message.chat.id != source_chat_id:
+        return
+
+    if not has_copyable_video_content(message):
+        return
+
+    lesson_number = extract_video_lesson_number(message)
+    if not lesson_number:
+        return
+
+    label = f"mm{lesson_number}"
+    save_lesson_video_mapping(
+        lesson_number=lesson_number,
+        label=label,
+        source_message_id=message.message_id,
+    )
+    logger.info(
+        "Indexed lesson video | lesson=%s | label=%s | message_id=%s",
+        lesson_number,
+        label,
+        message.message_id,
+    )
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = update.effective_user
@@ -612,13 +835,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         state = get_user_state(user.id)
         if state["completed_lessons"] == 0:
-            await show_lesson(query, user.id, 1)
+            await show_lesson(query, user.id, 1, context)
         else:
             await show_main_menu(query, user.id)
         return
 
     guarded = {"main_menu", "all_lessons", "check_materials_access"}
-    if data in guarded or data.startswith(("lesson:", "complete:")):
+    if data in guarded or data.startswith(("lesson:", "complete:", "open_video:")):
         if not await ensure_paid_access(query, user.id, context):
             return
 
@@ -640,7 +863,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if data.startswith("lesson:"):
         lesson_number = int(data.split(":")[1])
-        await show_lesson(query, user.id, lesson_number)
+        await show_lesson(query, user.id, lesson_number, context)
+        return
+
+    if data.startswith("open_video:"):
+        lesson_number = int(data.split(":")[1])
+
+        state = get_user_state(user.id)
+        unlocked_to = min(max(state["completed_lessons"] + 1, 1), LESSONS_COUNT)
+        if lesson_number > unlocked_to:
+            await query.answer("Сначала пройди предыдущий урок.", show_alert=True)
+            return
+
+        result = await send_lesson_video(user.id, lesson_number, context)
+        if result == "ok":
+            await query.answer("Видео отправлено в чат.")
+        elif result == "source_chat_missing":
+            await query.answer("Не настроен VIDEO_SOURCE_CHAT.", show_alert=True)
+        elif result == "not_indexed":
+            await query.answer(build_video_not_indexed_text(lesson_number), show_alert=True)
+        else:
+            await query.answer("Не удалось отправить видео. Проверь права бота в канале.", show_alert=True)
         return
 
     if data.startswith("complete:"):
@@ -717,13 +960,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def build_application() -> Application:
     for lesson in LESSONS:
         logger.info(
-            "Lesson %s URLs | text=%s | video=%s",
+            "Lesson %s URLs | text=%s",
             lesson["number"],
             "set" if lesson["text_url"] else "empty",
-            "set" if lesson["video_url"] else "empty",
         )
 
     logger.info("Paid group chat for access | %s", PAID_GROUP_CHAT if PAID_GROUP_CHAT else "empty")
+    logger.info("Video source chat | %s", VIDEO_SOURCE_CHAT if VIDEO_SOURCE_CHAT else "empty")
     logger.info("Manager url | %s", "set" if MANAGER_URL else "empty")
     logger.info("Admin stats enabled | %s", "yes" if ADMIN_USER_IDS else "no")
 
@@ -731,6 +974,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_handler))
     application.add_handler(CommandHandler("stats", stats_handler))
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, index_video_source_post))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(
         MessageHandler(
@@ -744,12 +988,17 @@ def build_application() -> Application:
 
 async def post_init(application: Application) -> None:
     logger.info("Bot initialized")
+    logger.info(
+        "To auto-index old videos, edit the source posts in the channel so the bot receives edited_channel_post updates."
+    )
 
 
 def main() -> None:
     init_db()
     app = build_application()
     app.post_init = post_init
+
+    allowed_updates = ["message", "callback_query", "channel_post", "edited_channel_post"]
 
     if WEBHOOK_URL:
         webhook_path = f"/{WEBHOOK_PATH}"
@@ -760,13 +1009,13 @@ def main() -> None:
             url_path=WEBHOOK_PATH,
             webhook_url=f"{WEBHOOK_URL}{webhook_path}",
             secret_token=WEBHOOK_SECRET or None,
-            allowed_updates=["message", "callback_query"],
+            allowed_updates=allowed_updates,
             drop_pending_updates=True,
         )
     else:
         logger.info("Starting bot with polling")
         app.run_polling(
-            allowed_updates=["message", "callback_query"],
+            allowed_updates=allowed_updates,
             drop_pending_updates=True,
         )
 
